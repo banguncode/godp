@@ -1,0 +1,24 @@
+# Binaries and build artifacts
+bin/
+*.exe
+*.test
+*.out
+
+# Compiled object files
+*.o
+*.a
+*.so
+
+# Whitelist bundled vendor libraries and headers
+!lib/include/**
+!lib/x64/**
+
+# Temp and log files
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.vscode/
+.idea/
