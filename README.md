@@ -73,8 +73,9 @@ Designed specifically for headless server deployments, `godp` receives raw finge
 Prerequisites: Linux x86_64, GCC, Go 1.22+.
 
 ```bash
-# Clone and enter directory
-cd /home/rum/godp
+# Clone repository and enter directory
+git clone https://github.com/banguncode/godp.git
+cd godp
 
 # 1. Run automated test suite with race detector
 make test
