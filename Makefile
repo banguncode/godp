@@ -8,7 +8,12 @@ BIN_DIR      = bin
 BINARY       = $(BIN_DIR)/$(APP_NAME)
 INSTALL_DIR  = /opt/godp
 
-GO          ?= go
+# Auto-detect Go binary: check PATH first, then fallback to ~/.local/go/bin/go, /usr/local/go/bin/go
+GO ?= $(shell which go 2>/dev/null || \
+      (test -x $(HOME)/.local/go/bin/go && echo $(HOME)/.local/go/bin/go) || \
+      (test -x /usr/local/go/bin/go && echo /usr/local/go/bin/go) || \
+      echo go)
+
 PORT        ?= 5050
 DOCKER_IMAGE = godp:latest
 
@@ -17,7 +22,7 @@ DOCKER_IMAGE = godp:latest
 all: test build
 
 build: ## Compile godp server binary with embedded rpath
-	@echo "==> Building $(BINARY)..."
+	@echo "==> Building $(BINARY) using $(GO)..."
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags="-s -w" -o $(BINARY) $(MAIN_PATH)
 	@echo "==> Build complete: $(BINARY)"
@@ -27,7 +32,7 @@ run: build ## Build and run the server locally
 	PORT=$(PORT) ./$(BINARY)
 
 test: ## Execute unit and integration tests
-	@echo "==> Running test suite..."
+	@echo "==> Running test suite using $(GO)..."
 	$(GO) test -v -race ./pkg/dp/...
 
 clean: ## Remove build artifacts
