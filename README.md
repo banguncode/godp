@@ -17,14 +17,13 @@ Designed specifically for headless server deployments, `godp` receives raw finge
 
 1. [Architecture Overview](#architecture-overview)
 2. [Key Capabilities](#key-capabilities)
-3. [Directory Structure](#directory-structure)
-4. [Quick Start (Local Development)](#quick-start-local-development)
-5. [Deployment Options](#deployment-options)
+3. [Quick Start (Local Development)](#quick-start-local-development)
+4. [Deployment Options](#deployment-options)
    - [Option A: Systemd Service (Recommended for Linux Server / VM)](#option-a-systemd-service-recommended-for-linux-server--vm)
    - [Option B: Docker & Docker Compose (Container Deployment)](#option-b-docker--docker-compose-container-deployment)
-6. [Configuration Reference](#configuration-reference)
-7. [API Reference Summary](#api-reference-summary)
-8. [License](#license)
+5. [Configuration Reference](#configuration-reference)
+6. [API Reference Summary](#api-reference-summary)
+7. [License](#license)
 
 ---
 
@@ -66,42 +65,6 @@ Designed specifically for headless server deployments, `godp` receives raw finge
   - Configurable request size limiting (`MaxBytesReader`)
   - Optional API Key authentication (`X-API-Key` or `Bearer`)
   - CORS pre-flight handling
-
----
-
-## Directory Structure
-
-Following the standard Go project layout:
-
-```
-godp/
-├── cmd/
-│   └── godp-server/
-│       └── main.go                  # Main entrypoint with signal handling
-├── internal/
-│   ├── api/
-│   │   ├── dto/                     # Request and Response transfer objects
-│   │   ├── handler/                 # FMD and Health handlers
-│   │   ├── middleware/              # Security, CORS, Logging, Recovery
-│   │   └── router/                  # HTTP route registry
-│   └── config/                      # Environment-based configuration
-├── pkg/
-│   └── dp/                          # Pure Go wrapper around libdpfj C SDK
-│       ├── dpfj.go                  # Core biometric algorithms
-│       ├── dpfj_test.go             # Unit test suite
-│       ├── types.go                 # Enums, constants, and data structures
-│       └── errors.go                # Strongly-typed error mapping
-├── lib/
-│   ├── include/                     # Vendor C headers (dpfj.h, dpfpdd.h, etc.)
-│   └── x64/                         # Vendor x64 shared objects (.so)
-├── systemd/
-│   └── godp.service                 # Production systemd unit configuration
-├── docs/
-│   └── API.md                       # Comprehensive REST API specifications
-├── docker-compose.yml               # Container orchestration file
-├── Dockerfile                       # Multi-stage production container
-└── Makefile                         # Automation commands
-```
 
 ---
 
