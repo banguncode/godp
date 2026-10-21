@@ -4,11 +4,27 @@
 [![Platform: Linux x64](https://img.shields.io/badge/Platform-Linux%20x64-blue.svg)](https://ubuntu.com/)
 [![SDK: Crossmatch / DigitalPersona](https://img.shields.io/badge/SDK-U.are.U%203.x-orange.svg)](https://www.crossmatch.com)
 [![Docker: Ready](https://img.shields.io/badge/Docker-Ready-2496ED.svg?logo=docker)](https://www.docker.com/)
+[![Systemd: Service](https://img.shields.io/badge/Systemd-Production--Ready-red.svg)](systemd/godp.service)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-lightgrey.svg)](#license)
 
 `godp` is an enterprise-grade, high-performance **server-side biometric processing microservice** written in Go, wrapping the official DigitalPersona / Crossmatch U.are.U C SDK (`libdpfj`).
 
 Designed specifically for headless server deployments, `godp` receives raw fingerprint scans or candidate templates from client workstations (Windows, Linux, Web, or Mobile) and handles **multi-sample enrollment, ISO/ANSI minutiae extraction, 1:1 verification, and 1:N biometric identification** at cloud scale.
+
+---
+
+## Table of Contents
+
+1. [Architecture Overview](#architecture-overview)
+2. [Key Capabilities](#key-capabilities)
+3. [Directory Structure](#directory-structure)
+4. [Quick Start (Local Development)](#quick-start-local-development)
+5. [Deployment Options](#deployment-options)
+   - [Option A: Systemd Service (Recommended for Linux Server / VM)](#option-a-systemd-service-recommended-for-linux-server--vm)
+   - [Option B: Docker & Docker Compose (Container Deployment)](#option-b-docker--docker-compose-container-deployment)
+6. [Configuration Reference](#configuration-reference)
+7. [API Reference Summary](#api-reference-summary)
+8. [License](#license)
 
 ---
 
@@ -78,17 +94,18 @@ godp/
 ├── lib/
 │   ├── include/                     # Vendor C headers (dpfj.h, dpfpdd.h, etc.)
 │   └── x64/                         # Vendor x64 shared objects (.so)
+├── systemd/
+│   └── godp.service                 # Production systemd unit configuration
 ├── docs/
 │   └── API.md                       # Comprehensive REST API specifications
-├── Makefile                         # Automation commands
-└── Dockerfile                       # Multi-stage production container
+├── docker-compose.yml               # Container orchestration file
+├── Dockerfile                       # Multi-stage production container
+└── Makefile                         # Automation commands
 ```
 
 ---
 
-## Quick Start
-
-### 1. Build and Run Locally
+## Quick Start (Local Development)
 
 Prerequisites: Linux x86_64, GCC, Go 1.22+.
 
@@ -96,36 +113,128 @@ Prerequisites: Linux x86_64, GCC, Go 1.22+.
 # Clone and enter directory
 cd /home/rum/godp
 
-# Run automated tests
+# 1. Run automated test suite with race detector
 make test
 
-# Build and run server (default port 5050)
+# 2. Build and run server (default port 5050)
 make run
 ```
 
-### 2. Verify Server Status
-
+Test the health probe:
 ```bash
 curl -s http://localhost:5050/health | python3 -m json.tool
 ```
 
-### 3. Test Biometric Verification (1:1 Compare)
+---
+
+## Deployment Options
+
+`godp` can be deployed either natively as a **Systemd background service** or containerized via **Docker / Docker Compose**.
+
+---
+
+### Option A: Systemd Service (Recommended for Linux Server / VM)
+
+Running as a native systemd daemon offers the lowest possible latency and minimal memory footprint (~0.25 MB).
+
+#### Automated Installation (Using Makefile)
 
 ```bash
-curl -s -X POST http://localhost:5050/api/v1/fmd/compare \
-  -H "Content-Type: application/json" \
-  -d '{
-    "probe_fmd_base64": "<BASE64_FMD_1>",
-    "enrolled_fmd_base64": "<BASE64_FMD_2>",
-    "format": "ISO_19794_2_2005"
-  }'
+# Compile and install service automatically
+make install-systemd
+```
+
+#### Manual Step-by-Step Installation
+
+1. **Build the production binary:**
+   ```bash
+   make build
+   ```
+
+2. **Deploy binary and shared libraries to `/opt/godp`:**
+   ```bash
+   sudo mkdir -p /opt/godp/bin /opt/godp/lib
+   sudo cp bin/godp-server /opt/godp/bin/
+   sudo cp -r lib/x64 /opt/godp/lib/
+   ```
+
+3. **Create unprivileged system user:**
+   ```bash
+   sudo useradd --system --no-create-home --shell /usr/sbin/nologin godp
+   sudo chown -R godp:godp /opt/godp
+   sudo chmod -R 755 /opt/godp
+   ```
+
+4. **Install and activate the systemd unit:**
+   ```bash
+   sudo cp systemd/godp.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable godp.service
+   sudo systemctl start godp.service
+   ```
+
+5. **Verify service status and stream live logs:**
+   ```bash
+   # Check service status
+   sudo systemctl status godp.service
+
+   # Stream live JSON structured logs
+   sudo journalctl -u godp.service -f
+   ```
+
+#### Managing the Service
+
+```bash
+sudo systemctl restart godp.service   # Restart
+sudo systemctl stop godp.service      # Stop
+sudo systemctl disable godp.service   # Disable autostart
 ```
 
 ---
 
-## Configuration
+### Option B: Docker & Docker Compose (Container Deployment)
 
-`godp` is configured via environment variables:
+Deploying via Docker isolates the application and bundled SDK dependencies inside a container.
+
+#### 1. Using Docker Compose (Quickest)
+
+Start the service in detached mode:
+```bash
+docker compose up -d --build
+```
+
+Check logs:
+```bash
+docker compose logs -f
+```
+
+Stop the service:
+```bash
+docker compose down
+```
+
+#### 2. Using Standalone Docker CLI
+
+Build and run container:
+```bash
+# Build multi-stage image
+make docker-build
+
+# Run container exposing port 5050
+make docker-run
+```
+
+Or execute directly:
+```bash
+docker build -t godp:latest .
+docker run -d --name godp-app -p 5050:5050 --restart unless-stopped godp:latest
+```
+
+---
+
+## Configuration Reference
+
+`godp` is configured via environment variables (or lines in `godp.service` / `docker-compose.yml`):
 
 | Variable | Default | Description |
 |---|---|---|
@@ -139,23 +248,21 @@ curl -s -X POST http://localhost:5050/api/v1/fmd/compare \
 
 ---
 
-## Docker Deployment
+## API Reference Summary
 
-Build and run in an isolated Linux container:
+All endpoints follow the uniform `{ "success": bool, "data"/"error": {...} }` schema:
 
-```bash
-# Build production image
-make docker-build
+| Endpoint | Method | Description |
+|---|:---:|---|
+| `/health` | `GET` | Health check & resource metrics |
+| `/api/v1/fmd/extract` | `POST` | Extract ISO/ANSI FMD from raw 8bpp grayscale image bytes |
+| `/api/v1/fmd/enroll` | `POST` | **Enrollment**: Aggregates 3–4 scan samples into 1 master template |
+| `/api/v1/fmd/compare` | `POST` | **1:1 Verification**: Compare probe FMD vs enrolled FMD |
+| `/api/v1/fmd/identify` | `POST` | **1:N Search**: Search probe FMD across candidate list |
+| `/api/v1/fmd/convert` | `POST` | Format conversion (ANSI 378 ⇄ ISO 19794-2) |
+| `/api/v1/quality/nfiq` | `POST` | NIST NFIQ fingerprint quality assessment (1–5) |
 
-# Run container on port 5050
-make docker-run
-```
-
----
-
-## Complete API Reference
-
-Detailed endpoint payloads, sample responses, and status codes are documented in [docs/API.md](docs/API.md).
+Detailed request payloads, schemas, and curl examples are documented in [docs/API.md](docs/API.md).
 
 ---
 

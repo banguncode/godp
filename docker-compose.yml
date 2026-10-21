@@ -1,0 +1,27 @@
+services:
+  godp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: godp-biometric-engine
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    environment:
+      - PORT=5050
+      - HOST=0.0.0.0
+      - MAX_REQUEST_SIZE_MB=15
+      - READ_TIMEOUT=15s
+      - WRITE_TIMEOUT=30s
+      # - API_KEY=secret-token-if-enabled
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5050/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

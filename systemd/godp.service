@@ -1,0 +1,45 @@
+[Unit]
+Description=godp - DigitalPersona Biometric Engine Microservice
+Documentation=https://github.com/banguncode/godp
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=godp
+Group=godp
+WorkingDirectory=/opt/godp
+
+# Binary path and embedded rpath lookup
+ExecStart=/opt/godp/bin/godp-server
+
+# Environment configuration
+Environment=PORT=5050
+Environment=HOST=0.0.0.0
+Environment=MAX_REQUEST_SIZE_MB=15
+Environment=READ_TIMEOUT=15s
+Environment=WRITE_TIMEOUT=30s
+# Environment=API_KEY=your-secret-api-key-here
+
+# Process restart policy
+Restart=always
+RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=15s
+
+# Security Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+# Logging to systemd journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=godp
+
+[Install]
+WantedBy=multi-user.target
