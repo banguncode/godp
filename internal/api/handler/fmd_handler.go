@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"image/png"
 	"net/http"
 
 	"godp/internal/api/dto"
@@ -14,6 +17,34 @@ type FMDHandler struct{}
 
 func NewFMDHandler() *FMDHandler {
 	return &FMDHandler{}
+}
+
+// isPNG checks if the byte slice starts with the PNG file signature (0x89504E470D0A1A0A).
+func isPNG(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n"))
+}
+
+// decodePNGToGrayscale decodes a PNG byte slice into 8bpp grayscale raw pixels.
+func decodePNGToGrayscale(data []byte) ([]byte, uint, uint, error) {
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("failed to decode PNG: %w", err)
+	}
+	bounds := img.Bounds()
+	imgW, imgH := bounds.Dx(), bounds.Dy()
+	if imgW == 0 || imgH == 0 {
+		return nil, 0, 0, fmt.Errorf("invalid PNG dimensions %dx%d", imgW, imgH)
+	}
+
+	raw := make([]byte, imgW*imgH)
+	for y := 0; y < imgH; y++ {
+		for x := 0; x < imgW; x++ {
+			r, g, b, _ := img.At(bounds.Min.X+x, bounds.Min.Y+y).RGBA()
+			// Standard ITU-R BT.601 luma conversion
+			raw[y*imgW+x] = byte((19595*r + 38469*g + 7472*b) >> 24)
+		}
+	}
+	return raw, uint(imgW), uint(imgH), nil
 }
 
 // HandleExtractFMD processes raw image data and returns an extracted FMD.
@@ -28,10 +59,6 @@ func (h *FMDHandler) HandleExtractFMD(w http.ResponseWriter, r *http.Request) {
 		dto.Error(w, http.StatusBadRequest, 400, "raw_image_base64 field is required.")
 		return
 	}
-	if req.Width == 0 || req.Height == 0 {
-		dto.Error(w, http.StatusBadRequest, 400, "width and height are required and must be greater than zero.")
-		return
-	}
 	if req.DPI == 0 {
 		req.DPI = 500 // Standard optical reader resolution
 	}
@@ -42,13 +69,29 @@ func (h *FMDHandler) HandleExtractFMD(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	width := req.Width
+	height := req.Height
+	if isPNG(rawBytes) {
+		gray, imgW, imgH, err := decodePNGToGrayscale(rawBytes)
+		if err != nil {
+			dto.Error(w, http.StatusBadRequest, 400, "Failed to decode PNG image: "+err.Error())
+			return
+		}
+		rawBytes = gray
+		width = imgW
+		height = imgH
+	} else if width == 0 || height == 0 {
+		dto.Error(w, http.StatusBadRequest, 400, "width and height are required for raw uncompressed image data.")
+		return
+	}
+
 	fmdFmt, err := dp.ParseFMDFormat(req.Format)
 	if err != nil {
 		dto.Error(w, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 
-	fmd, err := dp.CreateFMDFromRaw(rawBytes, req.Width, req.Height, req.DPI, dp.FingerPosition(req.FingerPosition), fmdFmt)
+	fmd, err := dp.CreateFMDFromRaw(rawBytes, width, height, req.DPI, dp.FingerPosition(req.FingerPosition), fmdFmt)
 	if err != nil {
 		dto.Error(w, http.StatusUnprocessableEntity, 422, "Minutiae extraction failed: "+err.Error())
 		return
@@ -84,8 +127,21 @@ func (h *FMDHandler) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 	for i, s := range req.Samples {
 		raw, err := base64.StdEncoding.DecodeString(s)
 		if err != nil {
-			dto.Error(w, http.StatusBadRequest, 400, "Invalid base64 encoding in sample at index "+string(rune('0'+i)))
+			dto.Error(w, http.StatusBadRequest, 400, fmt.Sprintf("Invalid base64 encoding in sample at index %d: %v", i, err))
 			return
+		}
+		if isPNG(raw) {
+			gray, imgW, imgH, err := decodePNGToGrayscale(raw)
+			if err != nil {
+				dto.Error(w, http.StatusUnprocessableEntity, 422, fmt.Sprintf("Failed to decode PNG sample at index %d: %v", i, err))
+				return
+			}
+			fmd, err := dp.CreateFMDFromRaw(gray, imgW, imgH, 500, dp.FingerUnknown, fmdFmt)
+			if err != nil {
+				dto.Error(w, http.StatusUnprocessableEntity, 422, fmt.Sprintf("Failed to extract minutiae from PNG sample at index %d: %v", i, err))
+				return
+			}
+			raw = fmd
 		}
 		samples = append(samples, raw)
 	}
@@ -97,11 +153,11 @@ func (h *FMDHandler) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dto.JSON(w, http.StatusOK, map[string]interface{}{
-		"session_id":        req.SessionID,
+		"session_id":          req.SessionID,
 		"enrolled_fmd_base64": base64.StdEncoding.EncodeToString(enrolledFMD),
-		"enrolled_fmd_size": len(enrolledFMD),
-		"samples_processed": len(samples),
-		"format":            fmdFmt.String(),
+		"enrolled_fmd_size":   len(enrolledFMD),
+		"samples_processed":   len(samples),
+		"format":              fmdFmt.String(),
 	})
 }
 
@@ -148,10 +204,10 @@ func (h *FMDHandler) HandleCompare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dto.JSON(w, http.StatusOK, map[string]interface{}{
-		"match":                isMatch,
-		"dissimilarity_score":  score,
-		"threshold_applied":    appliedThreshold,
-		"format":               fmdFmt.String(),
+		"match":               isMatch,
+		"dissimilarity_score": score,
+		"threshold_applied":   appliedThreshold,
+		"format":              fmdFmt.String(),
 	})
 }
 
@@ -196,8 +252,8 @@ func (h *FMDHandler) HandleIdentify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dto.JSON(w, http.StatusOK, map[string]interface{}{
-		"match_found": len(matches) > 0,
-		"matches":     matches,
+		"match_found":         len(matches) > 0,
+		"matches":             matches,
 		"candidates_searched": len(candidates),
 	})
 }
@@ -240,7 +296,7 @@ func (h *FMDHandler) HandleConvert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dto.JSON(w, http.StatusOK, map[string]interface{}{
-		"fmd_base64": base64.StdEncoding.EncodeToString(converted),
+		"fmd_base64":  base64.StdEncoding.EncodeToString(converted),
 		"from_format": fromFmt.String(),
 		"to_format":   toFmt.String(),
 		"fmd_size":    len(converted),
@@ -255,8 +311,8 @@ func (h *FMDHandler) HandleQuality(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.RawImageBase64 == "" || req.Width == 0 || req.Height == 0 {
-		dto.Error(w, http.StatusBadRequest, 400, "raw_image_base64, width, and height are required.")
+	if req.RawImageBase64 == "" {
+		dto.Error(w, http.StatusBadRequest, 400, "raw_image_base64 is required.")
 		return
 	}
 	if req.DPI == 0 {
@@ -269,7 +325,23 @@ func (h *FMDHandler) HandleQuality(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	score, err := dp.GetNFIQQualityFromRaw(raw, req.Width, req.Height, req.DPI)
+	width := req.Width
+	height := req.Height
+	if isPNG(raw) {
+		gray, imgW, imgH, err := decodePNGToGrayscale(raw)
+		if err != nil {
+			dto.Error(w, http.StatusBadRequest, 400, "Failed to decode PNG image: "+err.Error())
+			return
+		}
+		raw = gray
+		width = imgW
+		height = imgH
+	} else if width == 0 || height == 0 {
+		dto.Error(w, http.StatusBadRequest, 400, "width and height are required.")
+		return
+	}
+
+	score, err := dp.GetNFIQQualityFromRaw(raw, width, height, req.DPI)
 	if err != nil {
 		dto.Error(w, http.StatusUnprocessableEntity, 422, "Quality evaluation failed: "+err.Error())
 		return
@@ -284,7 +356,7 @@ func (h *FMDHandler) HandleQuality(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dto.JSON(w, http.StatusOK, map[string]interface{}{
-		"nfiq_score":      score,
+		"nfiq_score":     score,
 		"interpretation": interpretations[score],
 	})
 }
