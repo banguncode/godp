@@ -112,23 +112,49 @@ curl -s -X POST http://localhost:5050/api/v1/fmd/extract \
 ---
 
 ### 3. Enrollment Session
-Combines multiple candidate samples (3 to 4 recommended) into a single master enrollment template.
+Fuses **2 or more raw captures of the same finger** into a single DigitalPersona
+*registration* template (`DP_REG_FEATURES`).
+The response also includes a JPEG preview of the last capture.
 
 * **Method:** `POST`
 * **Path:** `/api/v1/fmd/enroll`
+
+**Request fields**
+
+| Field | Type | Required | Description |
+|---|---|:---:|---|
+| `samples` | array | yes | Minimum 2 raw captures of the same finger (3-4 recommended). Each item is a DigitalPersona WebSDK capture (see below), or a plain base64 string of raw 8bpp pixels. |
+| `width`, `height` | uint | plain base64 only | Pixel dimensions for plain base64 samples. Ignored for WebSDK captures (read from `Format`). |
+| `dpi` | uint | no | Resolution for plain base64 samples (default `500`). WebSDK captures use `Format.iXdpi`. |
+| `finger_position` | int | no | NIST/ISO finger position (default `0` = unknown). |
+| `session_id` | string | no | Echoed back in the response. |
+| `format` | string | no | **Ignored.** Enrollment output is always `DP_REG_FEATURES`. |
+
+**WebSDK capture** (send it exactly as the SDK delivers it, as a JSON object or as a JSON string):
+```json
+{
+  "Compression": 0,
+  "Data": "_v769_Xz9_r8-vXz9fT1_...",
+  "Format": { "iWidth": 500, "iHeight": 550, "iXdpi": 700, "uBPP": 8 },
+  "Header": { "...": "ignored" },
+  "Version": 1
+}
+```
+- `Data` is **base64url** (`-` and `_`), with or without `=` padding. Standard base64 is accepted too.
+- Trailing padding bytes are trimmed to exactly `iWidth * iHeight` bytes.
+- Width, height and DPI are taken from `Format` (`iWidth`, `iHeight`, `iXdpi`).
+- Compressed captures (`Compression` other than `0`/`none`) and non-8bpp captures are rejected.
+
+> **Important:** send the raw pixels exactly as delivered by the reader.
+> PNG/JPEG samples and pre-extracted FMDs (ISO/ANSI) are rejected, because
+> re-encoded images do not match reliably.
 
 ```bash
 curl -s -X POST http://localhost:5050/api/v1/fmd/enroll \
   -H "Content-Type: application/json" \
   -d '{
     "session_id": "emp-10492-enroll",
-    "format": "ISO_19794_2_2005",
-    "samples": [
-      "<SAMPLE_1_FMD_BASE64>",
-      "<SAMPLE_2_FMD_BASE64>",
-      "<SAMPLE_3_FMD_BASE64>",
-      "<SAMPLE_4_FMD_BASE64>"
-    ]
+    "samples": [ <WEBSDK_CAPTURE_1>, <WEBSDK_CAPTURE_2>, <WEBSDK_CAPTURE_3>, <WEBSDK_CAPTURE_4> ]
   }'
 ```
 
@@ -138,13 +164,28 @@ curl -s -X POST http://localhost:5050/api/v1/fmd/enroll \
   "success": true,
   "data": {
     "session_id": "emp-10492-enroll",
-    "enrolled_fmd_base64": "Rk1EAAAA...",
+    "enrolled_fmd_base64": "AP...",
     "enrolled_fmd_size": 1288,
     "samples_processed": 4,
-    "format": "ISO_19794_2_2005"
+    "format": "DP_REG_FEATURES",
+    "image_base64": "/9j/4AAQSkZJRg...",
+    "image_format": "jpeg",
+    "image_width": 500,
+    "image_height": 550
   }
 }
 ```
+
+`image_base64` is a Base64 JPEG of the **last** raw sample. Use it as
+`<img src="data:image/jpeg;base64,...">`.
+
+**Errors**
+
+| HTTP | Cause |
+|:---:|---|
+| 400 | Fewer than 2 samples, or a sample that cannot be parsed: invalid JSON/base64, `Data` shorter than `iWidth * iHeight`, compressed or non-8bpp capture, PNG, missing `width`/`height` for plain base64. The message names the sample index. |
+| 422 | Minutiae extraction failure, or the SDK could not build a template from the samples (e.g. captures do not match). |
+| 500 | Failed to encode the preview image. |
 
 ---
 
@@ -271,4 +312,4 @@ curl -s -X POST http://localhost:5050/api/v1/quality/nfiq \
 |---|---|---|
 | `ISO_19794_2_2005` | ISO/IEC 19794-2:2005 | International biometric interchange format *(Recommended)* |
 | `ANSI_378_2004` | ANSI INCITS 378-2004 | US NIST biometric interchange format |
-| `DP_REG_FEATURES` | DigitalPersona Proprietary | Legacy registration template |
+| `DP_REG_FEATURES` | DigitalPersona Proprietary | Registration template produced by `/fmd/enroll` |

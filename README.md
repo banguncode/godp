@@ -15,44 +15,20 @@ Designed specifically for headless server deployments, `godp` receives raw finge
 
 ## Table of Contents
 
-1. [Architecture Overview](#architecture-overview)
-2. [Key Capabilities](#key-capabilities)
-3. [Quick Start (Local Development)](#quick-start-local-development)
-4. [Deployment Options](#deployment-options)
+1. [Key Capabilities](#key-capabilities)
+2. [Quick Start (Local Development)](#quick-start-local-development)
+3. [Deployment Options](#deployment-options)
    - [Option A: Systemd Service (Recommended for Linux Server / VM)](#option-a-systemd-service-recommended-for-linux-server--vm)
    - [Option B: Docker & Docker Compose (Container Deployment)](#option-b-docker--docker-compose-container-deployment)
-5. [Configuration Reference](#configuration-reference)
-6. [API Reference Summary](#api-reference-summary)
-7. [License](#license)
-
----
-
-## Architecture Overview
-
-```
-[ PC Klien Windows ]
-  │  • USB Fingerprint Scanner (DigitalPersona U.are.U 4500/5100)
-  │  • Capture via DigitalPersona Web SDK / Windows Service
-  │  • User scans finger 4 times during enrollment
-  │
-  ▼ HTTP POST (Kirim candidate samples base64)
-[ Backend Utama (Laravel / Node.js / Go) ]
-  │
-  ▼ HTTP POST http://godp-server:5050/api/v1/fmd/enroll
-[ godp Biometric Engine (Linux Server) ]
-  │  • Headless Cgo Wrapper (libdpfj.so)
-  │  • Multi-sample Minutiae Extraction (ISO/IEC 19794-2)
-  │  • Algoritma Fusi Master Enrollment FMD
-  │
-  ▼ Return Master Enrolled FMD Base64
-[ Database PostgreSQL / MySQL / Oracle ]
-```
+4. [Configuration Reference](#configuration-reference)
+5. [API Reference Summary](#api-reference-summary)
+6. [License](#license)
 
 ---
 
 ## Key Capabilities
 
-* **Server-Side Enrollment Engine:** Aggregates multiple raw samples (3–4 scans) into one unified master enrollment FMD template using `dpfj_create_enrollment_fmd`.
+* **Server-Side Enrollment Engine:** Fuses 2 or more raw captures (3–4 recommended) of the same finger into one DigitalPersona registration template (`DP_REG_FEATURES`) using `dpfj_start_enrollment` / `dpfj_add_to_enrollment` / `dpfj_create_enrollment_fmd`. Returns a JPEG preview of the last capture alongside the template.
 * **Zero System Dependencies:** Pre-compiled DigitalPersona libraries (`lib/x64`) and C headers (`lib/include`) are bundled directly within the repository; embedded `$ORIGIN` runtime paths allow immediate execution without manual `LD_LIBRARY_PATH`.
 * **Standard Compliant:** Native support for international biometric interchange formats:
   - **ISO/IEC 19794-2:2005**
@@ -220,11 +196,13 @@ All endpoints follow the uniform `{ "success": bool, "data"/"error": {...} }` sc
 |---|:---:|---|
 | `/health` | `GET` | Health check & resource metrics |
 | `/api/v1/fmd/extract` | `POST` | Extract ISO/ANSI FMD from raw 8bpp grayscale image bytes |
-| `/api/v1/fmd/enroll` | `POST` | **Enrollment**: Aggregates 3–4 scan samples into 1 master template |
+| `/api/v1/fmd/enroll` | `POST` | **Enrollment**: Fuses 2+ raw captures into 1 `DP_REG_FEATURES` template + JPEG preview of the last capture |
 | `/api/v1/fmd/compare` | `POST` | **1:1 Verification**: Compare probe FMD vs enrolled FMD |
 | `/api/v1/fmd/identify` | `POST` | **1:N Search**: Search probe FMD across candidate list |
 | `/api/v1/fmd/convert` | `POST` | Format conversion (ANSI 378 ⇄ ISO 19794-2) |
 | `/api/v1/quality/nfiq` | `POST` | NIST NFIQ fingerprint quality assessment (1–5) |
+
+> **Enrollment note:** `/api/v1/fmd/enroll` takes raw captures (DigitalPersona WebSDK capture JSON, or plain base64 8bpp pixels with `width`/`height`), not PNG/JPEG images or FMDs. ISO/ANSI templates cannot be fused. The output is a DigitalPersona proprietary template, so it is not interchangeable with ISO/ANSI FMDs.
 
 Detailed request payloads, schemas, and curl examples are documented in [docs/API.md](docs/API.md).
 

@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"image/png"
 	"net/http"
 
@@ -104,7 +106,25 @@ func (h *FMDHandler) HandleExtractFMD(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleEnroll aggregates multiple candidate FMD templates into one master enrolled FMD.
+// rawToJPEGBase64 encodes an 8bpp grayscale raw buffer (len == width*height) as a Base64 JPEG preview.
+func rawToJPEGBase64(raw []byte, width, height uint) (string, error) {
+	img := &image.Gray{
+		Pix:    raw,
+		Stride: int(width),
+		Rect:   image.Rect(0, 0, int(width), int(height)),
+	}
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+// HandleEnroll fuses 2+ RAW captures into one DP REGISTRATION FMD ("AP..." in base64).
+// Each sample is a DigitalPersona WebSDK capture (JSON object or JSON string), or a plain
+// base64/base64url string of raw 8bpp pixels with top-level width/height. Re-encoded images
+// (PNG/JPEG) change the pixel data and are rejected.
 func (h *FMDHandler) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 	var req dto.EnrollRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -113,42 +133,31 @@ func (h *FMDHandler) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(req.Samples) < 2 {
-		dto.Error(w, http.StatusBadRequest, 400, "Enrollment requires at least 2 candidate sample FMDs (typically 3 to 4 recommended).")
+		dto.Error(w, http.StatusBadRequest, 400, "Enrollment requires at least 2 raw captures of the same finger.")
 		return
 	}
 
-	fmdFmt, err := dp.ParseFMDFormat(req.Format)
-	if err != nil {
-		dto.Error(w, http.StatusBadRequest, 400, err.Error())
-		return
-	}
-
-	samples := make([][]byte, 0, len(req.Samples))
-	for i, s := range req.Samples {
-		raw, err := base64.StdEncoding.DecodeString(s)
+	samples := make([]dp.RawSample, 0, len(req.Samples))
+	for i, item := range req.Samples {
+		s, err := parseRawSample(item, req.Width, req.Height, req.DPI)
 		if err != nil {
-			dto.Error(w, http.StatusBadRequest, 400, fmt.Sprintf("Invalid base64 encoding in sample at index %d: %v", i, err))
+			dto.Error(w, http.StatusBadRequest, 400, fmt.Sprintf("Sample %d: %v", i, err))
 			return
 		}
-		if isPNG(raw) {
-			gray, imgW, imgH, err := decodePNGToGrayscale(raw)
-			if err != nil {
-				dto.Error(w, http.StatusUnprocessableEntity, 422, fmt.Sprintf("Failed to decode PNG sample at index %d: %v", i, err))
-				return
-			}
-			fmd, err := dp.CreateFMDFromRaw(gray, imgW, imgH, 500, dp.FingerUnknown, fmdFmt)
-			if err != nil {
-				dto.Error(w, http.StatusUnprocessableEntity, 422, fmt.Sprintf("Failed to extract minutiae from PNG sample at index %d: %v", i, err))
-				return
-			}
-			raw = fmd
-		}
-		samples = append(samples, raw)
+		samples = append(samples, s)
 	}
 
-	enrolledFMD, err := dp.CreateEnrollmentFMD(samples, fmdFmt)
+	enrolledFMD, err := dp.CreateEnrollmentFromRaw(samples, dp.FingerPosition(req.FingerPosition))
 	if err != nil {
 		dto.Error(w, http.StatusUnprocessableEntity, 422, "Enrollment failed: "+err.Error())
+		return
+	}
+
+	// Preview image: JPEG of the last raw capture.
+	last := samples[len(samples)-1]
+	imageB64, err := rawToJPEGBase64(last.Data, last.Width, last.Height)
+	if err != nil {
+		dto.Error(w, http.StatusInternalServerError, 500, "Failed to encode preview image: "+err.Error())
 		return
 	}
 
@@ -157,7 +166,11 @@ func (h *FMDHandler) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 		"enrolled_fmd_base64": base64.StdEncoding.EncodeToString(enrolledFMD),
 		"enrolled_fmd_size":   len(enrolledFMD),
 		"samples_processed":   len(samples),
-		"format":              fmdFmt.String(),
+		"format":              dp.FMDFormatDPRegFeatures.String(),
+		"image_base64":        imageB64,
+		"image_format":        "jpeg",
+		"image_width":         last.Width,
+		"image_height":        last.Height,
 	})
 }
 

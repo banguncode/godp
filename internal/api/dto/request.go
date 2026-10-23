@@ -1,5 +1,7 @@
 package dto
 
+import "encoding/json"
+
 // ExtractFMDRequest defines the payload for extracting an FMD from raw grayscale image bytes.
 type ExtractFMDRequest struct {
 	RawImageBase64 string `json:"raw_image_base64"`
@@ -13,8 +15,16 @@ type ExtractFMDRequest struct {
 // EnrollRequest defines the payload for creating a master enrollment FMD from multiple candidate samples.
 type EnrollRequest struct {
 	SessionID string   `json:"session_id,omitempty"`
-	Format    string   `json:"format"`
-	Samples   []string `json:"samples"` // Candidate FMD strings in Base64
+	Format    string   `json:"format"` // ignored for enrollment: output is always DP_REG_FEATURES
+	// Samples are RAW captures of the SAME finger, each either a DigitalPersona WebSDK capture
+	// ({"Data":"<base64url>","Format":{"iWidth":..,"iHeight":..,"iXdpi":..}}, as an object or a JSON string)
+	// or a plain base64 string of 8bpp pixels (then Width/Height/DPI below are required).
+	// PNG/JPEG and pre-extracted FMDs are rejected.
+	Samples        []json.RawMessage `json:"samples"`
+	Width          uint              `json:"width,omitempty"`
+	Height         uint              `json:"height,omitempty"`
+	DPI            uint              `json:"dpi,omitempty"`
+	FingerPosition int               `json:"finger_position,omitempty"`
 }
 
 // CompareRequest defines the payload for 1:1 fingerprint verification.

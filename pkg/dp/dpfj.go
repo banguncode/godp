@@ -4,6 +4,7 @@ package dp
 #cgo CFLAGS: -I${SRCDIR}/../../lib/include
 #cgo LDFLAGS: -L${SRCDIR}/../../lib/x64 -Wl,-rpath,$ORIGIN/../../lib/x64:$ORIGIN/../lib/x64:/usr/lib/Crossmatch/urusdk-linux/Linux/lib/x64 -ldpfj -ldpfpdd -lm
 #include <dpfj.h>
+#include <dpfpdd.h>
 #include <dpfj_quality.h>
 #include <dpfj_compression.h>
 #include <stdlib.h>
@@ -14,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -81,63 +83,101 @@ func CreateFMDFromFID(fidData []byte, fidFmt FIDFormat, fmdFmt FMDFormat) ([]byt
 	return out, nil
 }
 
-// CreateEnrollmentFMD combines multiple candidate FMD templates (typically 3 to 4 samples)
-// into a single high-quality master enrolled template suitable for persistent storage.
-func CreateEnrollmentFMD(samples [][]byte, fmdFmt FMDFormat) ([]byte, error) {
+// RawSample is one uncompressed 8bpp grayscale capture of the same finger.
+type RawSample struct {
+	Data   []byte
+	Width  uint
+	Height uint
+	DPI    uint
+}
+
+var (
+	initOnce sync.Once
+	initErr  error
+)
+
+// Init loads the reader-driver layer and selects the matching engine.
+// The DP enrollment functions return NOT_IMPLEMENTED unless dpfpdd_init()
+// ran first and the DPFJ engine is selected (same order as DPUruNet.dll).
+// Safe to call many times; it is invoked automatically by CreateEnrollmentFromRaw.
+func Init() error {
+	initOnce.Do(func() {
+		// rc 0 (SUCCESS) or 1 (already initialized) are both OK; retry transient
+		// failures a few times, like PHP-DP's NativeMethods does.
+		var rc C.int
+		for attempt := 0; attempt < 5; attempt++ {
+			rc = C.dpfpdd_init()
+			if rc == 0 || rc == 1 {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if rc != 0 && rc != 1 {
+			initErr = fmt.Errorf("dpfpdd_init failed: %w", MapErrorCode(int(rc)))
+			return
+		}
+		if rc := C.dpfj_select_engine(nil, C.DPFJ_ENGINE_DPFJ); rc != 0 {
+			initErr = fmt.Errorf("dpfj_select_engine failed: %w", MapErrorCode(int(rc)))
+		}
+	})
+	return initErr
+}
+
+// CreateEnrollmentFromRaw fuses 2 or more raw captures of one finger into a
+// single DigitalPersona REGISTRATION template (base64 starts with "AP...").
+//
+// Rules taken from the vendor SDK behaviour (see PHP-DP docs/troubleshooting.md):
+//   - dpfj_start_enrollment() takes DP_REG_FEATURES (1), NOT ISO/ANSI.
+//   - every sample is a DP_PRE_REG_FEATURES (0) FMD.
+//   - each FMD is extracted INSIDE the started session, interleaved with
+//     dpfj_add_to_enrollment(), otherwise samples are accepted but never fuse.
+//   - MORE_DATA from add_to_enrollment is normal, not an error.
+func CreateEnrollmentFromRaw(samples []RawSample, pos FingerPosition) ([]byte, error) {
 	if len(samples) < 2 {
 		return nil, fmt.Errorf("dpfj: enrollment requires at least 2 samples, provided %d", len(samples))
+	}
+	if err := Init(); err != nil {
+		return nil, err
 	}
 
 	enrollmentMutex.Lock()
 	defer enrollmentMutex.Unlock()
 
-	// 1. Start enrollment session
-	rc := C.dpfj_start_enrollment(C.int(fmdFmt))
+	rc := C.dpfj_start_enrollment(C.int(FMDFormatDPRegFeatures))
 	if err := MapErrorCode(int(rc)); err != nil {
 		return nil, fmt.Errorf("start enrollment failed: %w", err)
 	}
 	defer C.dpfj_finish_enrollment()
 
-	// 2. Feed candidate FMD samples into the enrollment engine
-	ready := false
-	for i, sample := range samples {
-		if len(sample) == 0 {
+	for i, s := range samples {
+		if len(s.Data) == 0 {
 			return nil, fmt.Errorf("sample at index %d is empty", i)
 		}
 
+		pre, err := CreateFMDFromRaw(s.Data, s.Width, s.Height, s.DPI, pos, FMDFormatDPPreRegFeatures)
+		if err != nil {
+			return nil, fmt.Errorf("extract sample %d failed: %w", i+1, err)
+		}
+
 		addRc := C.dpfj_add_to_enrollment(
-			C.int(fmdFmt),
-			(*C.uchar)(unsafe.Pointer(&sample[0])),
-			C.uint(len(sample)),
-			0, // View index 0
+			C.int(FMDFormatDPPreRegFeatures),
+			(*C.uchar)(unsafe.Pointer(&pre[0])),
+			C.uint(len(pre)),
+			0,
 		)
-
-		const DPFJ_SUCCESS = 0
-		const DPFJ_E_MORE_DATA = 0x0d | (0x05BA << 16)
-
-		if addRc == DPFJ_SUCCESS {
-			ready = true
-		} else if addRc == DPFJ_E_MORE_DATA {
-			// Engine needs more samples
-			continue
-		} else {
+		if addRc == 0 {
+			break // SUCCESS: fusion is complete, remaining samples are not needed (same as PHP-DP)
+		}
+		if int(addRc) != dpfjEMoreData {
 			return nil, fmt.Errorf("failed adding sample %d: %w", i+1, MapErrorCode(int(addRc)))
 		}
+		// MORE_DATA: normal "keep feeding samples" signal, not an error.
 	}
 
-	if !ready && len(samples) < 4 {
-		return nil, ErrEnrollmentNotReady
-	}
-
-	// 3. Create the aggregated master enrollment template
+	// Always try to finalize; the SDK decides if the set is sufficient.
 	fmdBuf := make([]byte, MaxFMDSize)
 	fmdSize := C.uint(MaxFMDSize)
-
-	createRc := C.dpfj_create_enrollment_fmd(
-		(*C.uchar)(unsafe.Pointer(&fmdBuf[0])),
-		&fmdSize,
-	)
-
+	createRc := C.dpfj_create_enrollment_fmd((*C.uchar)(unsafe.Pointer(&fmdBuf[0])), &fmdSize)
 	if err := MapErrorCode(int(createRc)); err != nil {
 		return nil, fmt.Errorf("create enrollment FMD failed: %w", err)
 	}
@@ -146,6 +186,8 @@ func CreateEnrollmentFMD(samples [][]byte, fmdFmt FMDFormat) ([]byte, error) {
 	copy(out, fmdBuf[:fmdSize])
 	return out, nil
 }
+
+const dpfjEMoreData = 0x0d | (0x05BA << 16)
 
 // Compare performs 1:1 verification between a probe FMD and an enrolled FMD.
 // Returns isMatch (true if score <= threshold) and the exact dissimilarity score (0 = perfect match).

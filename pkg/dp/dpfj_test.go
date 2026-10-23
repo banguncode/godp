@@ -31,7 +31,7 @@ func TestParseFMDFormat(t *testing.T) {
 
 func TestEnrollmentValidation(t *testing.T) {
 	// Must fail with less than 2 samples
-	_, err := CreateEnrollmentFMD([][]byte{{1, 2, 3}}, FMDFormatISO19794_2_2005)
+	_, err := CreateEnrollmentFromRaw([]RawSample{{Data: []byte{1}}}, FingerUnknown)
 	if err == nil {
 		t.Error("expected error for less than 2 samples, got nil")
 	}
