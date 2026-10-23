@@ -26,7 +26,7 @@ var (
 func MapErrorCode(rc int) error {
 	const (
 		DPFJ_SUCCESS                    = 0
-		DP_FACILITY                     = 0x0001
+		DP_FACILITY                     = 0x05BA
 		DPFJ_E_NOT_IMPLEMENTED          = 0x0a | (DP_FACILITY << 16)
 		DPFJ_E_FAILURE                  = 0x0b | (DP_FACILITY << 16)
 		DPFJ_E_NO_DATA                  = 0x0c | (DP_FACILITY << 16)

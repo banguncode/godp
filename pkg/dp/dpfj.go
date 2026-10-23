@@ -113,7 +113,7 @@ func CreateEnrollmentFMD(samples [][]byte, fmdFmt FMDFormat) ([]byte, error) {
 		)
 
 		const DPFJ_SUCCESS = 0
-		const DPFJ_E_MORE_DATA = 0x0d | (0x0001 << 16)
+		const DPFJ_E_MORE_DATA = 0x0d | (0x05BA << 16)
 
 		if addRc == DPFJ_SUCCESS {
 			ready = true
