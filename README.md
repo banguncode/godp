@@ -132,30 +132,92 @@ Both `make install-systemd` and the manual steps below produce this layout.
 
 ### Option 2: System-wide install (ldconfig)
 
-Use this if you want any process on the server (or a binary placed in an arbitrary directory) to find the SDK without relying on rpath.
+Use this when **other applications on the server** (not only `godp`) must load the SDK, or when a binary lives in a directory without a sibling `lib/x64`. Once registered with `ldconfig`, the libraries are found by every process without `LD_LIBRARY_PATH` or rpath.
+
+**Step 0: Check for leftover copies.** An older manual install (for example in `/lib` or `/usr/lib`) can conflict with this one. The output should be empty or say "clean":
 
 ```bash
-# 1. Copy the libraries, preserving symlinks
-sudo mkdir -p /usr/local/lib/godp
-sudo cp -a lib/x64/. /usr/local/lib/godp/
+ldconfig -p | grep -E 'dpfj|dpfpdd' || echo "clean"
+```
 
-# 2. Register the directory with the dynamic loader
+If old entries show up, find out where they came from before removing anything:
+
+```bash
+ls -l /lib/libdpf* /usr/lib/libdpf* 2>/dev/null
+dpkg -S /lib/libdpfj.so.3 2>&1
+```
+
+If `dpkg -S` reports `no path found matching pattern`, the files were copied by hand and can be removed:
+
+```bash
+sudo rm -f /lib/libdpfj.so* /usr/lib/libdpfj.so* /usr/lib/libdpfpdd*
+sudo ldconfig
+```
+
+If `dpkg -S` names a package, remove it with `sudo apt remove <package>` instead.
+
+**Step 1: Install.** Run from the repository root:
+
+```bash
+# Copy libraries and headers, preserving symlinks
+sudo mkdir -p /usr/local/lib/godp /usr/local/include/godp
+sudo cp -a lib/x64/. /usr/local/lib/godp/
+sudo cp -a lib/include/. /usr/local/include/godp/
+
+# Register the library directory with the dynamic loader
 echo "/usr/local/lib/godp" | sudo tee /etc/ld.so.conf.d/godp.conf
 
-# 3. Refresh the loader cache
-sudo ldconfig
+# Let every user (www-data, service accounts, ...) read the files
+sudo chmod -R a+rX /usr/local/lib/godp /usr/local/include/godp
 
-# 4. Confirm the loader sees the libraries
+# Refresh the loader cache
+sudo ldconfig
+```
+
+**Step 2: Verify.** First confirm the loader knows the libraries:
+
+```bash
 ldconfig -p | grep -E 'dpfj|dpfpdd'
 ```
 
-To remove it later:
+Every entry should point to `/usr/local/lib/godp/...`. Then prove that a binary *outside* the repository can use them. A plain `ldd ~/godp/bin/godp-server` is not enough, because it still resolves through the `$ORIGIN` rpath to `lib/x64` first:
+
+```bash
+mkdir -p /tmp/uji/bin
+cp ~/godp/bin/godp-server /tmp/uji/bin/
+cd /tmp
+env -u LD_LIBRARY_PATH ldd /tmp/uji/bin/godp-server | grep -Ei "dpfj|dpfpdd|not found"
+rm -rf /tmp/uji
+```
+
+Expected: `libdpfj.so.3` and `libdpfpdd.so.3` resolve to `/usr/local/lib/godp/...` and nothing says `not found`.
+
+**Step 3: Use it from other applications.**
+
+| Application type | What to do |
+|---|---|
+| Prebuilt binaries and systemd services | Nothing. The loader finds the libraries through the `ldconfig` cache. |
+| C / C++ | `gcc app.c -I/usr/local/include/godp -L/usr/local/lib/godp -ldpfj` |
+| Go (cgo) | `CGO_CFLAGS="-I/usr/local/include/godp" CGO_LDFLAGS="-L/usr/local/lib/godp -ldpfj" go build` |
+| Python (`ctypes`), PHP (FFI), etc. | Load by soname, no path needed: `ctypes.CDLL("libdpfj.so.3")` |
+| Docker containers | **Not automatic**, containers are isolated from the host. Copy the libraries into the image, or mount them: `-v /usr/local/lib/godp:/usr/local/lib/godp:ro` and run `ldconfig` inside the container (or set `LD_LIBRARY_PATH=/usr/local/lib/godp`). |
+
+> Linking with `-ldpfj` needs the unversioned symlink `libdpfj.so`. Check with `ls -l /usr/local/lib/godp/libdpfj*`. If only `libdpfj.so.3` exists, create it: `sudo ln -s libdpfj.so.3 /usr/local/lib/godp/libdpfj.so && sudo ldconfig`.
+
+**Updating the SDK.** After replacing files in `lib/x64`, repeat Step 1 (the `cp -a` lines and `sudo ldconfig`). Existing files are overwritten and the cache is refreshed.
+
+**Uninstalling.**
 
 ```bash
 sudo rm -f /etc/ld.so.conf.d/godp.conf
-sudo rm -rf /usr/local/lib/godp
+sudo rm -rf /usr/local/lib/godp /usr/local/include/godp
 sudo ldconfig
+
+# Verify: nothing should be registered anymore
+ldconfig -p | grep -E 'dpfj|dpfpdd' || echo "clean"
 ```
+
+This does not touch `lib/x64` inside the repository or `/opt/godp` (systemd deployment).
 
 ### Systemd and Docker
 
@@ -182,6 +244,9 @@ ENV LD_LIBRARY_PATH=/opt/godp/lib/x64
 | Same error under systemd | Libraries missing from `/opt/godp/lib/x64`, or wrong ownership/permissions | Re-run `make install-systemd`, or set `Environment=LD_LIBRARY_PATH=/opt/godp/lib/x64` |
 | `ldd` shows `libxxx => not found` for a library that is not in `lib/x64` | A system package is missing (for example `libstdc++`, `libusb`) | Install it with `apt install <package>` and re-check with `ldd` |
 | `.so.3` missing but `.so.3.0.0` exists | Symlinks were lost when copying | Re-copy with `cp -a`, or recreate: `ln -s libdpfpdd.so.3.0.0 libdpfpdd.so.3` |
+| `ldconfig -p` lists `dpfj`/`dpfpdd` under `/lib` or `/usr/lib` | Leftover manual copy from an earlier install, may shadow or duplicate the new one | Follow Step 0 in [Option 2](#option-2-system-wide-install-ldconfig) |
+| Works as your user, fails as `www-data` or a service user | Library files are not world-readable | `sudo chmod -R a+rX /usr/local/lib/godp && sudo ldconfig` |
+| Works on the host, fails inside a container | Containers do not see the host's `ldconfig` cache | Copy the libraries into the image or mount `/usr/local/lib/godp` |
 | `wrong ELF class` or `cannot execute binary file` | Architecture mismatch (not x86_64) | The bundled libraries are Linux x86_64 only |
 
 Useful diagnostics:
