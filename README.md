@@ -17,19 +17,26 @@ Designed specifically for headless server deployments, `godp` receives raw finge
 
 1. [Key Capabilities](#key-capabilities)
 2. [Quick Start (Local Development)](#quick-start-local-development)
-3. [Deployment Options](#deployment-options)
+3. [SDK Library Installation](#sdk-library-installation)
+   - [How library loading works](#how-library-loading-works)
+   - [Verify the libraries](#verify-the-libraries)
+   - [Option 1: Bundled libraries (default)](#option-1-bundled-libraries-default)
+   - [Option 2: System-wide install (ldconfig)](#option-2-system-wide-install-ldconfig)
+   - [Systemd and Docker](#systemd-and-docker)
+   - [Troubleshooting](#troubleshooting)
+4. [Deployment Options](#deployment-options)
    - [Option A: Systemd Service (Recommended for Linux Server / VM)](#option-a-systemd-service-recommended-for-linux-server--vm)
    - [Option B: Docker & Docker Compose (Container Deployment)](#option-b-docker--docker-compose-container-deployment)
-4. [Configuration Reference](#configuration-reference)
-5. [API Reference Summary](#api-reference-summary)
-6. [License](#license)
+5. [Configuration Reference](#configuration-reference)
+6. [API Reference Summary](#api-reference-summary)
+7. [License](#license)
 
 ---
 
 ## Key Capabilities
 
 * **Server-Side Enrollment Engine:** Fuses 2 or more raw captures (3–4 recommended) of the same finger into one DigitalPersona registration template (`DP_REG_FEATURES`) using `dpfj_start_enrollment` / `dpfj_add_to_enrollment` / `dpfj_create_enrollment_fmd`. Returns a JPEG preview of the last capture alongside the template.
-* **Zero System Dependencies:** Pre-compiled DigitalPersona libraries (`lib/x64`) and C headers (`lib/include`) are bundled directly within the repository; embedded `$ORIGIN` runtime paths allow immediate execution without manual `LD_LIBRARY_PATH`.
+* **Bundled SDK, No Separate Installer:** Pre-compiled DigitalPersona libraries (`lib/x64`) and C headers (`lib/include`) ship inside the repository. The built binary locates them through an embedded `$ORIGIN` runtime path, so no manual `LD_LIBRARY_PATH` is needed as long as the `lib/x64` directory stays next to the binary layout described in [SDK Library Installation](#sdk-library-installation).
 * **Standard Compliant:** Native support for international biometric interchange formats:
   - **ISO/IEC 19794-2:2005**
   - **ANSI INCITS 378-2004**
@@ -46,7 +53,7 @@ Designed specifically for headless server deployments, `godp` receives raw finge
 
 ## Quick Start (Local Development)
 
-Prerequisites: Linux x86_64, GCC, Go 1.22+.
+Prerequisites: Linux x86_64, GCC, Go 1.22+. The DigitalPersona SDK libraries are already included in `lib/x64`; there is nothing extra to install for local development.
 
 ```bash
 # Clone repository and enter directory
@@ -65,11 +72,133 @@ Test the health probe:
 curl -s http://localhost:5050/health | python3 -m json.tool
 ```
 
+If `make test` or `make run` fails with `error while loading shared libraries`, see [Troubleshooting](#troubleshooting).
+
+---
+
+## SDK Library Installation
+
+`godp` depends on the native DigitalPersona U.are.U shared libraries (`libdpfj.so`, `libdpfpdd.so.3`, and related files). They are **bundled in `lib/x64`**, so you normally do not need to install the SDK separately. This section explains how they are found at runtime and what to do when they are not.
+
+### How library loading works
+
+The Linux dynamic loader must be able to find `libdpfj.so` and its dependencies when the process starts. `godp` supports three ways, in order of preference:
+
+| Method | Used by | Notes |
+|---|---|---|
+| Embedded `$ORIGIN` rpath | `make build` / `make run` binary, systemd | Resolved relative to the binary's own location. No configuration needed. |
+| Absolute rpath + `LD_LIBRARY_PATH` | `make test` | `go test` builds its binary in a temporary directory (`/tmp/go-build.../`), so `$ORIGIN` does not point at `lib/x64`. The Makefile passes an absolute path instead. |
+| System-wide (`ldconfig`) | Any process on the host | Optional. See [Option 2](#option-2-system-wide-install-ldconfig). |
+
+### Verify the libraries
+
+Run these from the repository root to confirm the bundled SDK is complete:
+
+```bash
+# The required libraries should be present
+ls -l lib/x64/ | grep -E 'dpfj|dpfpdd'
+
+# No line should say "not found"
+ldd lib/x64/libdpfj.so | grep -i "not found"
+
+# After building, check the binary resolves everything
+make build
+ldd bin/godp-server | grep -Ei "dpfj|dpfpdd|not found"
+```
+
+Expected: `libdpfpdd.so.3 -> libdpfpdd.so.3.0.0` is present in `lib/x64`, and `ldd` reports no `not found` entries.
+
+> **Keep symlinks intact.** The `.so` files are versioned symlinks (for example `libdpfpdd.so -> libdpfpdd.so.3 -> libdpfpdd.so.3.0.0`). When copying, use `cp -a` (or `cp -r`) rather than copying single files, otherwise the `.so.3` name the loader asks for will be missing.
+
+### Option 1: Bundled libraries (default)
+
+Nothing to install. Keep the directory layout so `$ORIGIN` resolves correctly:
+
+```
+godp/
+├── bin/godp-server        # binary built by `make build`
+└── lib/x64/               # DigitalPersona libraries
+```
+
+The same layout is used by the systemd deployment:
+
+```
+/opt/godp/
+├── bin/godp-server
+└── lib/x64/
+```
+
+Both `make install-systemd` and the manual steps below produce this layout.
+
+### Option 2: System-wide install (ldconfig)
+
+Use this if you want any process on the server (or a binary placed in an arbitrary directory) to find the SDK without relying on rpath.
+
+```bash
+# 1. Copy the libraries, preserving symlinks
+sudo mkdir -p /usr/local/lib/godp
+sudo cp -a lib/x64/. /usr/local/lib/godp/
+
+# 2. Register the directory with the dynamic loader
+echo "/usr/local/lib/godp" | sudo tee /etc/ld.so.conf.d/godp.conf
+
+# 3. Refresh the loader cache
+sudo ldconfig
+
+# 4. Confirm the loader sees the libraries
+ldconfig -p | grep -E 'dpfj|dpfpdd'
+```
+
+To remove it later:
+
+```bash
+sudo rm -f /etc/ld.so.conf.d/godp.conf
+sudo rm -rf /usr/local/lib/godp
+sudo ldconfig
+```
+
+### Systemd and Docker
+
+**Systemd.** `make install-systemd` copies `lib/x64` to `/opt/godp/lib/x64`, next to `/opt/godp/bin/godp-server`, so the `$ORIGIN` rpath works as-is. If the service fails with `cannot open shared object file`, add this line to the `[Service]` section of `/etc/systemd/system/godp.service`, then run `sudo systemctl daemon-reload && sudo systemctl restart godp.service`:
+
+```ini
+Environment=LD_LIBRARY_PATH=/opt/godp/lib/x64
+```
+
+**Docker.** The provided `Dockerfile` copies the bundled libraries into the image, so no SDK needs to be installed on the host. If you write your own Dockerfile, make sure the final stage includes the libraries and points the loader at them:
+
+```dockerfile
+COPY lib/x64 /opt/godp/lib/x64
+COPY --from=build /src/bin/godp-server /opt/godp/bin/godp-server
+ENV LD_LIBRARY_PATH=/opt/godp/lib/x64
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `libdpfpdd.so.3: cannot open shared object file` when running `go test` directly | Test binary is built in `/tmp`, so `$ORIGIN` does not resolve to `lib/x64` | Use `make test`, or run `LD_LIBRARY_PATH=$(pwd)/lib/x64 go test -v -race ./pkg/dp/...` |
+| Same error when running `bin/godp-server` | Binary was moved away from its `lib/x64` sibling directory | Restore the layout from [Option 1](#option-1-bundled-libraries-default), or use [Option 2](#option-2-system-wide-install-ldconfig) |
+| Same error under systemd | Libraries missing from `/opt/godp/lib/x64`, or wrong ownership/permissions | Re-run `make install-systemd`, or set `Environment=LD_LIBRARY_PATH=/opt/godp/lib/x64` |
+| `ldd` shows `libxxx => not found` for a library that is not in `lib/x64` | A system package is missing (for example `libstdc++`, `libusb`) | Install it with `apt install <package>` and re-check with `ldd` |
+| `.so.3` missing but `.so.3.0.0` exists | Symlinks were lost when copying | Re-copy with `cp -a`, or recreate: `ln -s libdpfpdd.so.3.0.0 libdpfpdd.so.3` |
+| `wrong ELF class` or `cannot execute binary file` | Architecture mismatch (not x86_64) | The bundled libraries are Linux x86_64 only |
+
+Useful diagnostics:
+
+```bash
+# See exactly which libraries a binary resolves
+ldd bin/godp-server
+
+# See which paths the loader searches
+LD_DEBUG=libs bin/godp-server 2>&1 | head -40
+```
+
 ---
 
 ## Deployment Options
 
-`godp` can be deployed either natively as a **Systemd background service** or containerized via **Docker / Docker Compose**.
+`godp` can be deployed either natively as a **Systemd background service** or containerized via **Docker / Docker Compose**. In both cases the SDK libraries must travel with the application; see [SDK Library Installation](#sdk-library-installation).
 
 ---
 
@@ -81,6 +210,7 @@ Running as a native systemd daemon offers the lowest possible latency and minima
 
 ```bash
 # Compile and install service automatically
+# (also deploys lib/x64 to /opt/godp/lib/x64)
 make install-systemd
 ```
 
@@ -95,7 +225,7 @@ make install-systemd
    ```bash
    sudo mkdir -p /opt/godp/bin /opt/godp/lib
    sudo cp bin/godp-server /opt/godp/bin/
-   sudo cp -r lib/x64 /opt/godp/lib/
+   sudo cp -a lib/x64 /opt/godp/lib/
    ```
 
 3. **Create unprivileged system user:**
@@ -113,8 +243,11 @@ make install-systemd
    sudo systemctl start godp.service
    ```
 
-5. **Verify service status and stream live logs:**
+5. **Verify the libraries resolve, then check service status and stream live logs:**
    ```bash
+   # No "not found" lines expected
+   ldd /opt/godp/bin/godp-server | grep -i "not found"
+
    # Check service status
    sudo systemctl status godp.service
 
@@ -134,7 +267,7 @@ sudo systemctl disable godp.service   # Disable autostart
 
 ### Option B: Docker & Docker Compose (Container Deployment)
 
-Deploying via Docker isolates the application and bundled SDK dependencies inside a container.
+Deploying via Docker isolates the application and bundled SDK dependencies inside a container. No SDK installation is required on the host.
 
 #### 1. Using Docker Compose (Quickest)
 
@@ -185,6 +318,7 @@ docker run -d --name godp-app -p 5050:5050 --restart unless-stopped godp:latest
 | `CORS_ALLOW_ORIGIN` | `*` | Allowed CORS origins |
 | `READ_TIMEOUT` | `15s` | Maximum duration for reading the entire request |
 | `WRITE_TIMEOUT` | `30s` | Maximum duration before timing out writes |
+| `LD_LIBRARY_PATH` | *(unset)* | Optional. Extra search path for the SDK libraries; only needed if the `$ORIGIN` layout cannot be used |
 
 ---
 
