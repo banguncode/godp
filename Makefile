@@ -7,6 +7,7 @@ MAIN_PATH    = ./cmd/godp-server
 BIN_DIR      = bin
 BINARY       = $(BIN_DIR)/$(APP_NAME)
 INSTALL_DIR  = /opt/godp
+ROOT         = $(CURDIR)
 
 # Auto-detect Go binary: check PATH first, then fallback to ~/.local/go/bin/go, /usr/local/go/bin/go
 GO ?= $(shell which go 2>/dev/null || \
@@ -33,6 +34,8 @@ run: build ## Build and run the server locally
 
 test: ## Execute unit and integration tests
 	@echo "==> Running test suite using $(GO)..."
+	LD_LIBRARY_PATH=$(ROOT)/lib/x64 \
+	CGO_LDFLAGS="-L$(ROOT)/lib/x64 -Wl,-rpath,$(ROOT)/lib/x64" \
 	$(GO) test -v -race ./pkg/dp/...
 
 clean: ## Remove build artifacts
